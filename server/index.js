@@ -1,0 +1,798 @@
+const express = require('express');
+const mysql = require('mysql2');
+const cors = require('cors');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+require('dotenv').config();
+const app = express();
+
+const allowedOrigins = (process.env.FRONTEND_URL || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+// Security middleware
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true
+}));
+app.use(express.json({ limit: '10mb' })); // Limit request size
+
+// Security headers middleware
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  next();
+});
+
+// JWT Secret - CHANGE THIS TO A SECURE RANDOM STRING IN PRODUCTION
+const JWT_SECRET = process.env.JWT_SECRET || 'your_jwt_secret_key_here_change_this_in_production';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
+
+// --- DATABASE CONNECTION ---
+const db = mysql.createPool({
+  host: process.env.DB_HOST || 'localhost',
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'xplora_db',
+  port: process.env.DB_PORT || 3306,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
+
+// Connection Test
+db.getConnection((err, connection) => {
+  if (err) {
+    console.error("❌ DATABASE ERROR: ", err.message);
+  } else {
+    console.log("✅ DATABASE CONNECTED! Xplora system ready.");
+    connection.release();
+  }
+});
+
+// Input validation helper
+const validateEmail = (email) => {
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  return emailRegex.test(email);
+};
+
+const validatePassword = (password) => {
+  // At least 8 characters, 1 uppercase, 1 lowercase, 1 number
+  const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[a-zA-Z\d@$!%*?&]{8,}$/;
+  return passwordRegex.test(password);
+};
+
+const sanitizeInput = (input) => {
+  if (typeof input !== 'string') return input;
+  return input.trim().replace(/[<>]/g, ''); // Basic XSS prevention
+};
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
+  }
+  
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Invalid token' });
+    }
+    req.user = user;
+    next();
+  });
+};
+
+// --- AUTH ROUTES ---
+
+// Register
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { username, email, password } = req.body;
+    
+    // Sanitize inputs
+    const sanitizedUsername = sanitizeInput(username);
+    const sanitizedEmail = email.toLowerCase().trim();
+    
+    // Validate inputs
+    if (!sanitizedUsername || !sanitizedEmail || !password) {
+      return res.status(400).json({ error: 'All fields are required' });
+    }
+    
+    if (sanitizedUsername.length < 3 || sanitizedUsername.length > 50) {
+      return res.status(400).json({ error: 'Username must be 3-50 characters' });
+    }
+    
+    if (!validateEmail(sanitizedEmail)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+    
+    if (!validatePassword(password)) {
+      return res.status(400).json({ 
+        error: 'Password must be at least 8 characters with uppercase, lowercase, and number' 
+      });
+    }
+    
+    // Check if user exists
+    const [existingUser] = await db.promise().query(
+      'SELECT id FROM users WHERE email = ? OR username = ?',
+      [sanitizedEmail, sanitizedUsername]
+    );
+    
+    if (existingUser.length > 0) {
+      return res.status(409).json({ error: 'User already exists' });
+    }
+    
+    // Hash password with higher cost
+    const hashedPassword = await bcrypt.hash(password, 12);
+    
+    // Insert user
+    const [result] = await db.promise().query(
+      'INSERT INTO users (username, email, password_hash, avatar_url) VALUES (?, ?, ?, ?)',
+      [sanitizedUsername, sanitizedEmail, hashedPassword, 'https://via.placeholder.com/40']
+    );
+    
+    const token = jwt.sign(
+      { id: result.insertId, username: sanitizedUsername }, 
+      JWT_SECRET, 
+      { expiresIn: JWT_EXPIRES_IN }
+    );
+    
+    res.status(201).json({ 
+      message: 'User registered successfully', 
+      token,
+      user: { id: result.insertId, username: sanitizedUsername, email: sanitizedEmail, avatar_url: 'https://via.placeholder.com/40' }
+    });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ error: 'Internal server error' }); // Don't leak error details
+  }
+});
+
+// Login
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required' });
+    }
+    
+    const sanitizedEmail = email.toLowerCase().trim();
+    
+    if (!validateEmail(sanitizedEmail)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+    
+    // Find user
+    const [users] = await db.promise().query(
+      'SELECT id, username, email, password_hash, avatar_url FROM users WHERE email = ?',
+      [sanitizedEmail]
+    );
+    
+    if (users.length === 0) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    const user = users[0];
+    
+    // Check password
+    const isValidPassword = await bcrypt.compare(password, user.password_hash);
+    if (!isValidPassword) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    
+    const token = jwt.sign(
+      { id: user.id, username: user.username }, 
+      JWT_SECRET, 
+      { expiresIn: JWT_EXPIRES_IN }
+    );
+    
+    res.json({ 
+      message: 'Login successful', 
+      token,
+      user: { id: user.id, username: user.username, email: user.email, avatar_url: user.avatar_url }
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// --- API ROUTES ---
+
+// 1. Get All Experiences
+app.get('/api/experiences', (req, res) => {
+  const sql = `
+    SELECT e.*, u.avatar_url, c.name as category_name 
+    FROM experiences e 
+    JOIN users u ON e.user_id = u.id 
+    JOIN categories c ON e.category_id = c.id
+    ORDER BY e.created_at DESC`;
+
+  db.query(sql, (err, result) => {
+    if (err) {
+      console.error("Query error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+    res.json(result);
+  });
+});
+
+// 2. Create New Experience
+app.post('/api/experiences', authenticateToken, async (req, res) => {
+  try {
+    const { category_id, category_name, title, content, location, rating, product_id } = req.body;
+    const user_id = req.user.id;
+    let resolvedCategoryId = category_id;
+
+    if (!resolvedCategoryId && category_name) {
+      const [existingCategory] = await db.promise().query(
+        'SELECT id FROM categories WHERE name = ?',
+        [category_name]
+      );
+
+      if (existingCategory.length > 0) {
+        resolvedCategoryId = existingCategory[0].id;
+      } else {
+        const [insertCategory] = await db.promise().query(
+          'INSERT INTO categories (name) VALUES (?)',
+          [category_name]
+        );
+        resolvedCategoryId = insertCategory.insertId;
+      }
+    }
+
+    if (!resolvedCategoryId) {
+      return res.status(400).json({ error: 'Missing category information' });
+    }
+
+    // Insert experience into database
+    const insertSql = `
+      INSERT INTO experiences (user_id, category_id, title, content, location, rating, product_id) 
+      VALUES (?, ?, ?, ?, ?, ?, ?)`;
+    
+    const [result] = await db.promise().query(insertSql, [user_id, resolvedCategoryId, title, content, location, rating, product_id || null]);
+    const experienceId = result.insertId;
+
+    // Send notifications to followers
+    const followersSql = `
+      SELECT user_id FROM category_follows 
+      WHERE category_id = ? AND user_id != ?`;
+    
+    const [followers] = await db.promise().query(followersSql, [resolvedCategoryId, user_id]);
+    
+    // Add notification for each follower
+    if (followers.length > 0) {
+      const notificationValues = followers.map(follower => [follower.user_id, 'new_experience', experienceId]);
+      const notificationSql = `
+        INSERT INTO notifications (user_id, type, reference_id) 
+        VALUES ?`;
+      
+      await db.promise().query(notificationSql, [notificationValues]);
+    }
+
+    res.status(201).json({ 
+      message: 'Experience created successfully', 
+      id: experienceId 
+    });
+  } catch (error) {
+    console.error("Experience creation error:", error);
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'An experience with this title already exists.' });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 3. Get User Unread Notification Count
+app.get('/api/notifications/unread/:userId', (req, res) => {
+  const userId = req.params.userId;
+  
+  const sql = `
+    SELECT COUNT(*) as unread_count 
+    FROM notifications 
+    WHERE user_id = ? AND is_read = 0`;
+  
+  db.query(sql, [userId], (err, result) => {
+    if (err) {
+      console.error("Notification count query error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+    res.json({ unread_count: result[0].unread_count });
+  });
+});
+
+// 4. Categorize Get
+app.get('/api/categories', (req, res) => {
+  const sql = `SELECT * FROM categories ORDER BY name`;
+  
+  db.query(sql, (err, result) => {
+    if (err) {
+      console.error("Category query error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+    res.json(result);
+  });
+});
+
+// 4.1. Follow status for a category
+app.get('/api/categories/:id/follow-status', authenticateToken, async (req, res) => {
+  try {
+    const categoryId = req.params.id;
+    const userId = req.user.id;
+
+    const [rows] = await db.promise().query(
+      'SELECT id FROM category_follows WHERE user_id = ? AND category_id = ?',
+      [userId, categoryId]
+    );
+
+    res.json({ followed: rows.length > 0 });
+  } catch (error) {
+    console.error('Follow status error:', error);
+    res.status(500).json({ error: 'Unable to check follow status' });
+  }
+});
+
+// 4.2. Follow a category
+app.post('/api/categories/:id/follow', authenticateToken, async (req, res) => {
+  try {
+    const categoryId = req.params.id;
+    const userId = req.user.id;
+
+    await db.promise().query(
+      'INSERT IGNORE INTO category_follows (user_id, category_id) VALUES (?, ?)',
+      [userId, categoryId]
+    );
+
+    res.status(200).json({ message: 'Category followed' });
+  } catch (error) {
+    console.error('Follow category error:', error);
+    res.status(500).json({ error: 'Unable to follow category' });
+  }
+});
+
+// 4.3. Unfollow a category
+app.delete('/api/categories/:id/follow', authenticateToken, async (req, res) => {
+  try {
+    const categoryId = req.params.id;
+    const userId = req.user.id;
+
+    await db.promise().query(
+      'DELETE FROM category_follows WHERE user_id = ? AND category_id = ?',
+      [userId, categoryId]
+    );
+
+    res.status(200).json({ message: 'Category unfollowed' });
+  } catch (error) {
+    console.error('Unfollow category error:', error);
+    res.status(500).json({ error: 'Unable to unfollow category' });
+  }
+});
+
+// 4.4. Get notifications for current user
+app.get('/api/notifications', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const sql = `
+      SELECT id, type, reference_id, is_read, created_at
+      FROM notifications
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+      LIMIT 50`;
+
+    const [notifications] = await db.promise().query(sql, [userId]);
+    res.json(notifications);
+  } catch (error) {
+    console.error('Notifications fetch error:', error);
+    res.status(500).json({ error: 'Unable to load notifications' });
+  }
+});
+
+// 4.5. Mark all notifications as read
+app.post('/api/notifications/read-all', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    await db.promise().query(
+      'UPDATE notifications SET is_read = 1 WHERE user_id = ?',
+      [userId]
+    );
+    res.status(200).json({ message: 'Notifications marked as read' });
+  } catch (error) {
+    console.error('Mark notifications read error:', error);
+    res.status(500).json({ error: 'Unable to mark notifications read' });
+  }
+});
+
+// 5. Get All Products
+app.get('/api/products', (req, res) => {
+  const sql = `
+    SELECT p.*, u.avatar_url, c.name as category_name 
+    FROM products p 
+    JOIN users u ON p.user_id = u.id 
+    JOIN categories c ON p.category_id = c.id
+    ORDER BY p.created_at DESC`;
+
+  db.query(sql, (err, result) => {
+    if (err) {
+      console.error("Product query error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+    res.json(result);
+  });
+});
+
+// 5.1. Get Product Details with Reviews
+app.get('/api/products/:id', (req, res) => {
+  const productId = req.params.id;
+  
+  // Get product details
+  const productSql = `
+    SELECT p.*, u.avatar_url, c.name as category_name 
+    FROM products p 
+    JOIN users u ON p.user_id = u.id 
+    JOIN categories c ON p.category_id = c.id
+    WHERE p.id = ?`;
+
+  // Get all experiences/reviews for this product
+  const experiencesSql = `
+    SELECT e.*, u.avatar_url, u.username, c.name as category_name 
+    FROM experiences e 
+    JOIN users u ON e.user_id = u.id 
+    JOIN categories c ON e.category_id = c.id
+    WHERE e.product_id = ?
+    ORDER BY e.created_at DESC`;
+
+  db.query(productSql, [productId], (err, productResult) => {
+    if (err) {
+      console.error("Product details query error:", err);
+      return res.status(500).json({ error: err.message });
+    }
+    
+    if (productResult.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    db.query(experiencesSql, [productId], (err, experiencesResult) => {
+      if (err) {
+        console.error("Product experiences query error:", err);
+        return res.status(500).json({ error: err.message });
+      }
+
+      res.json({
+        product: productResult[0],
+        experiences: experiencesResult
+      });
+    });
+  });
+});
+
+// 6. Create New Product
+app.post('/api/products', authenticateToken, async (req, res) => {
+  try {
+    const { category_id, category_name, product_name, usage_duration, pros, cons, content } = req.body;
+    const user_id = req.user.id;
+    let resolvedCategoryId = category_id;
+
+    if (!resolvedCategoryId && category_name) {
+      const [existingCategory] = await db.promise().query(
+        'SELECT id FROM categories WHERE name = ?',
+        [category_name]
+      );
+
+      if (existingCategory.length > 0) {
+        resolvedCategoryId = existingCategory[0].id;
+      } else {
+        const [insertCategory] = await db.promise().query(
+          'INSERT INTO categories (name) VALUES (?)',
+          [category_name]
+        );
+        resolvedCategoryId = insertCategory.insertId;
+      }
+    }
+
+    if (!resolvedCategoryId) {
+      return res.status(400).json({ error: 'Missing category information' });
+    }
+
+    const insertSql = `
+      INSERT INTO products (user_id, category_id, product_name, usage_duration, pros, cons, content) 
+      VALUES (?, ?, ?, ?, ?, ?, ?)`;
+    
+    const [result] = await db.promise().query(insertSql, [user_id, resolvedCategoryId, product_name, usage_duration, pros, cons, content]);
+    const productId = result.insertId;
+
+    const followersSql = `
+      SELECT user_id FROM category_follows 
+      WHERE category_id = ? AND user_id != ?`;
+    
+    const [followers] = await db.promise().query(followersSql, [resolvedCategoryId, user_id]);
+    
+    if (followers.length > 0) {
+      const notificationValues = followers.map(follower => [follower.user_id, 'new_product', productId]);
+      const notificationSql = `
+        INSERT INTO notifications (user_id, type, reference_id) 
+        VALUES ?`;
+      
+      await db.promise().query(notificationSql, [notificationValues]);
+    }
+
+    res.status(201).json({ 
+      message: 'Product created successfully', 
+      id: productId 
+    });
+  } catch (error) {
+    console.error("Product creation error:", error);
+    if (error.code === 'ER_DUP_ENTRY') {
+      return res.status(409).json({ error: 'A product with this name already exists.' });
+    }
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 7. Delete Product
+app.delete('/api/products/:id', authenticateToken, async (req, res) => {
+  try {
+    const productId = req.params.id;
+    const user_id = req.user.id;
+
+    // Check if product exists and user owns it
+    const [product] = await db.promise().query(
+      'SELECT user_id FROM products WHERE id = ?',
+      [productId]
+    );
+
+    if (product.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    if (product[0].user_id !== user_id) {
+      return res.status(403).json({ error: 'Unauthorized: You can only delete your own products' });
+    }
+
+    // Delete associated experiences first
+    await db.promise().query('DELETE FROM experiences WHERE product_id = ?', [productId]);
+
+    // Delete product
+    await db.promise().query('DELETE FROM products WHERE id = ?', [productId]);
+
+    res.json({ message: 'Product deleted successfully' });
+  } catch (error) {
+    console.error("Product deletion error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 7.1. Admin Delete Product (no ownership check)
+app.delete('/api/admin/products/:id', async (req, res) => {
+  try {
+    const productId = req.params.id;
+    const adminKey = req.query.key;
+
+    // Simple admin key check
+    if (adminKey !== 'xplora_admin_2026') {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Check if product exists
+    const [product] = await db.promise().query(
+      'SELECT id FROM products WHERE id = ?',
+      [productId]
+    );
+
+    if (product.length === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    // Delete associated experiences first
+    await db.promise().query('DELETE FROM experiences WHERE product_id = ?', [productId]);
+
+    // Delete product
+    await db.promise().query('DELETE FROM products WHERE id = ?', [productId]);
+
+    res.json({ message: 'Product deleted successfully' });
+  } catch (error) {
+    console.error("Product deletion error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 7.2. Delete Product by ID (simple admin endpoint)
+app.get('/api/admin/delete-product/:id', async (req, res) => {
+  try {
+    const productId = req.params.id;
+    const adminKey = req.query.key;
+
+    // Simple admin key check
+    if (adminKey !== 'xplora_admin_2026') {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Delete associated experiences first
+    await db.promise().query('DELETE FROM experiences WHERE product_id = ?', [productId]);
+
+    // Delete product
+    const [result] = await db.promise().query('DELETE FROM products WHERE id = ?', [productId]);
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+
+    res.json({ message: 'Product deleted successfully' });
+  } catch (error) {
+    console.error("Product deletion error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ADMIN: Delete Experiences with Turkish Categories
+app.get('/api/admin/delete-turkish-experiences', async (req, res) => {
+  try {
+    const adminKey = req.query.key;
+
+    // Simple admin key check
+    if (adminKey !== 'xplora_admin_2026') {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Turkish categories: Sinema (id: 1), Teknoloji (id: 3)
+    const [result] = await db.promise().query(
+      'DELETE FROM experiences WHERE category_id IN (1, 3)'
+    );
+
+    res.json({ 
+      message: `Successfully deleted ${result.affectedRows} experiences with Turkish categories`,
+      deletedCount: result.affectedRows
+    });
+  } catch (error) {
+    console.error("Delete Turkish experiences error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ADMIN: Delete All Experiences
+app.get('/api/admin/delete-all-experiences', async (req, res) => {
+  try {
+    const adminKey = req.query.key;
+
+    // Simple admin key check
+    if (adminKey !== 'xplora_admin_2026') {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    const [result] = await db.promise().query('DELETE FROM experiences');
+
+    res.json({ 
+      message: `Successfully deleted all ${result.affectedRows} experiences`,
+      deletedCount: result.affectedRows
+    });
+  } catch (error) {
+    console.error("Delete all experiences error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ADMIN: Delete All Products
+app.get('/api/admin/delete-all-products', async (req, res) => {
+  try {
+    const adminKey = req.query.key;
+
+    // Simple admin key check
+    if (adminKey !== 'xplora_admin_2026') {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Delete associated experiences first
+    await db.promise().query('DELETE FROM experiences WHERE product_id IS NOT NULL OR product_id > 0');
+
+    // Delete products
+    const [result] = await db.promise().query('DELETE FROM products');
+
+    res.json({ 
+      message: `Successfully deleted all ${result.affectedRows} products`,
+      deletedCount: result.affectedRows
+    });
+  } catch (error) {
+    console.error("Delete all products error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 8. Search Experiences and Products
+app.get('/api/search', (req, res) => {
+  try {
+    const query = req.query.q || '';
+    
+    if (!query || query.trim().length === 0) {
+      return res.json({ experiences: [], products: [] });
+    }
+
+    const searchTerm = `%${query}%`;
+
+    // Search experiences
+    const experiencesSql = `
+      SELECT e.*, u.avatar_url, c.name as category_name 
+      FROM experiences e 
+      JOIN users u ON e.user_id = u.id 
+      JOIN categories c ON e.category_id = c.id
+      WHERE e.title LIKE ? OR e.content LIKE ? OR c.name LIKE ?
+      ORDER BY e.created_at DESC
+      LIMIT 10`;
+
+    // Search products
+    const productsSql = `
+      SELECT p.*, u.avatar_url, c.name as category_name 
+      FROM products p 
+      JOIN users u ON p.user_id = u.id 
+      JOIN categories c ON p.category_id = c.id
+      WHERE p.product_name LIKE ? OR p.content LIKE ? OR c.name LIKE ?
+      ORDER BY p.created_at DESC
+      LIMIT 10`;
+
+    db.query(experiencesSql, [searchTerm, searchTerm, searchTerm], (err, experiencesResult) => {
+      if (err) {
+        console.error("Experience search error:", err);
+        return res.status(500).json({ error: err.message });
+      }
+
+      db.query(productsSql, [searchTerm, searchTerm, searchTerm], (err, productsResult) => {
+        if (err) {
+          console.error("Product search error:", err);
+          return res.status(500).json({ error: err.message });
+        }
+
+        res.json({
+          experiences: experiencesResult,
+          products: productsResult
+        });
+      });
+    });
+  } catch (error) {
+    console.error("Search error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 9. Test Route
+app.get('/', (req, res) => {
+  res.send("Xplora API Server Running 🚀");
+});
+
+// ADMIN: Delete Product by ID (for testing/admin purposes)
+app.get('/api/admin/delete-product/:id', async (req, res) => {
+  try {
+    const productId = req.params.id;
+    
+    // Delete associated experiences first
+    await db.promise().query('DELETE FROM experiences WHERE product_id = ?', [productId]);
+    
+    // Delete product
+    const [result] = await db.promise().query('DELETE FROM products WHERE id = ?', [productId]);
+    
+    if (result.affectedRows > 0) {
+      res.json({ message: 'Product deleted successfully' });
+    } else {
+      res.status(404).json({ error: 'Product not found' });
+    }
+  } catch (error) {
+    console.error("Product deletion error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// --- START SERVER ---
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  console.log(`-----------------------------------------`);
+  console.log(`🚀 SERVER RUNNING: http://localhost:${PORT}`);
+  console.log(`-----------------------------------------`);
+});
