@@ -21,7 +21,7 @@ CREATE TABLE users (
   username VARCHAR(50) NOT NULL,
   email VARCHAR(255) NOT NULL,
   password_hash VARCHAR(255) NOT NULL,
-  avatar_url VARCHAR(500) DEFAULT 'https://via.placeholder.com/40',
+  avatar_url LONGTEXT DEFAULT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uq_users_username (username),
@@ -42,13 +42,15 @@ CREATE TABLE products (
   user_id INT UNSIGNED NOT NULL,
   category_id INT UNSIGNED NOT NULL,
   product_name VARCHAR(255) NOT NULL,
-  usage_duration VARCHAR(100) DEFAULT NULL,
+  product_code VARCHAR(100) DEFAULT NULL,
+  purchase_date DATE DEFAULT NULL,
   pros TEXT DEFAULT NULL,
   cons TEXT DEFAULT NULL,
   content TEXT NOT NULL,
+  rating TINYINT UNSIGNED NOT NULL DEFAULT 5,
+  product_image LONGTEXT DEFAULT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_products_product_name (product_name),
   KEY idx_products_user_id (user_id),
   KEY idx_products_category_id (category_id),
   CONSTRAINT fk_products_user
@@ -56,7 +58,9 @@ CREATE TABLE products (
     ON DELETE CASCADE,
   CONSTRAINT fk_products_category
     FOREIGN KEY (category_id) REFERENCES categories (id)
-    ON DELETE RESTRICT
+    ON DELETE RESTRICT,
+  CONSTRAINT chk_products_rating
+    CHECK (rating BETWEEN 1 AND 5)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE experiences (
@@ -67,10 +71,10 @@ CREATE TABLE experiences (
   content TEXT NOT NULL,
   location VARCHAR(255) DEFAULT NULL,
   rating TINYINT UNSIGNED NOT NULL DEFAULT 5,
+  experience_image LONGTEXT DEFAULT NULL,
   product_id INT UNSIGNED DEFAULT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_experiences_title (title),
   KEY idx_experiences_user_id (user_id),
   KEY idx_experiences_category_id (category_id),
   KEY idx_experiences_product_id (product_id),
