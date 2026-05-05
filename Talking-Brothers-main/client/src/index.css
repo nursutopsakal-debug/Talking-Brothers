@@ -1,0 +1,23 @@
+@import "tailwindcss";
+
+@theme {
+  /* Main design colors */
+  --color-brand-blue: #0056D2; /* Login screen left section and buttons */
+  --color-brand-orange: #ac3509; /* curious minds accent and category highlights */
+  --color-background: #f8f9fa; /* General background */
+  --color-surface: #ffffff; /* Cards and forms */
+  --color-text-primary: #191c1d;
+  --color-text-secondary: #424654;
+  
+  /* Tipografi */
+  --font-headline: "Plus Jakarta Sans", sans-serif;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-text-primary font-sans antialiased;
+  }
+  h1, h2, h3, h4 {
+    @apply font-headline font-extrabold tracking-tight;
+  }
+}
