@@ -84,8 +84,12 @@ const ProductDetails = ({ productId, onClose }) => {
         {/* Product Information */}
         <div className="bg-gradient-to-br from-green-50 to-emerald-100 p-8 rounded-2xl border-2 border-green-300 mb-8 shadow-lg">
           <div className="flex items-start gap-8">
-            <div className="w-28 h-28 bg-gradient-to-br from-green-500 to-emerald-600 rounded-2xl flex items-center justify-center text-white text-4xl font-black shadow-lg">
-              {product.product_name.charAt(0).toUpperCase()}
+            <div className="w-40 h-40 bg-gradient-to-br from-green-500 to-emerald-600 rounded-2xl flex items-center justify-center text-white text-4xl font-black shadow-lg overflow-hidden flex-shrink-0">
+              {product.product_image ? (
+                <img src={product.product_image} alt={product.product_name} className="w-full h-full object-cover" />
+              ) : (
+                <span>{product.product_name.charAt(0).toUpperCase()}</span>
+              )}
             </div>
             <div className="flex-1">
               <div className="flex items-center gap-3 mb-3">
@@ -142,6 +146,11 @@ const ProductDetails = ({ productId, onClose }) => {
                       <p className="font-bold text-slate-900 text-base mb-3">{experience.title}</p>
                     </div>
                   </div>
+                  {experience.experience_image && (
+                    <div className="mb-4 rounded-xl overflow-hidden border-2 border-blue-200">
+                      <img src={experience.experience_image} alt="Review photo" className="w-full h-48 object-cover" />
+                    </div>
+                  )}
                   <p className="text-slate-800 text-sm leading-relaxed font-semibold">{experience.content}</p>
                 </div>
               ))}
@@ -157,14 +166,18 @@ const ProductDetails = ({ productId, onClose }) => {
   );
 };
 
-const ProductCard = ({ product_name, usage_duration, pros, cons, content, category, onAddExperience, onViewDetails, user }) => (
+const ProductCard = ({ product_name, product_image, usage_duration, pros, cons, content, category, onAddExperience, onViewDetails, user }) => (
   <div className="bg-gradient-to-br from-green-50 via-white to-emerald-50 p-8 rounded-3xl shadow-lg hover:shadow-2xl transition-all border-2 border-green-200 group transform hover:scale-105 hover:-translate-y-2">
     <div className="aspect-16/10 rounded-2xl overflow-hidden mb-6 relative bg-gradient-to-br from-green-500 to-emerald-600 shadow-md">
-      <div className="w-full h-full flex items-center justify-center text-white">
-        <svg className="w-24 h-24 opacity-40" fill="currentColor" viewBox="0 0 24 24">
-          <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
-        </svg>
-      </div>
+      {product_image ? (
+        <img src={product_image} alt={product_name} className="w-full h-full object-cover" />
+      ) : (
+        <div className="w-full h-full flex items-center justify-center text-white bg-gradient-to-br from-green-500 to-emerald-600">
+          <svg className="w-24 h-24 opacity-40" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+          </svg>
+        </div>
+      )}
       <div className="absolute top-4 left-4 bg-gradient-to-r from-green-600 to-emerald-600 text-white px-4 py-2 rounded-full text-xs font-black shadow-lg">
         📦 PRODUCT
       </div>
@@ -273,6 +286,7 @@ const ProductsPage = ({ refreshTrigger, onAddExperience, user }) => {
             key={product.id} 
             category={product.category_name} 
             product_name={product.product_name}
+            product_image={product.product_image}
             usage_duration={product.usage_duration}
             pros={product.pros || "Not specified"}
             cons={product.cons || "Not specified"}

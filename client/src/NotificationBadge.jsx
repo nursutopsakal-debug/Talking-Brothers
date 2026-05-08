@@ -1,11 +1,18 @@
 import React, { useState, useEffect } from 'react';
 
-const NotificationBadge = ({ userId = 1 }) => {
+const NotificationBadge = () => {
   const [unreadCount, setUnreadCount] = useState(0);
 
   useEffect(() => {
     const fetchUnreadCount = () => {
-      fetch(`/api/notifications/unread/${userId}`)
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      
+      fetch(`/api/notifications/unread`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
         .then(res => res.json())
         .then(data => setUnreadCount(data.unread_count))
         .catch(err => console.error('Bildirim sayısı alınırken hata:', err));
@@ -18,7 +25,7 @@ const NotificationBadge = ({ userId = 1 }) => {
     const interval = setInterval(fetchUnreadCount, 30000);
 
     return () => clearInterval(interval);
-  }, [userId]);
+  }, []);
 
   if (unreadCount === 0) return null;
 

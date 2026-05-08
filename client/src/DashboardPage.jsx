@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import API_BASE from './config';
+import SearchUsers from './SearchUsers';
+import FollowingList from './FollowingList';
 
 // Helper function to fetch categories
 const fetchCategoriesFromApi = async () => {
@@ -12,10 +14,13 @@ const DashboardPage = ({ user, onLoginClick, onOpenNotifications }) => {
   const [categories, setCategories] = useState([]);
   const [followedIds, setFollowedIds] = useState(new Set());
   const [updates, setUpdates] = useState([]);
+  const [categoryUpdates, setCategoryUpdates] = useState([]);
+  const [userFollowUpdates, setUserFollowUpdates] = useState([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [savingCategoryId, setSavingCategoryId] = useState(null);
   const [error, setError] = useState(null);
+  const [refreshFollowing, setRefreshFollowing] = useState(0);
 
   const token = localStorage.getItem('token');
 
@@ -70,6 +75,14 @@ const DashboardPage = ({ user, onLoginClick, onOpenNotifications }) => {
       setCategories(categoriesData);
       setFollowedIds(new Set(followedData.map((item) => item.id)));
       setUpdates(updatesData);
+      
+      // Separate updates by source (category vs user follow)
+      const categoryBased = updatesData.filter(update => !update.from_user_follow);
+      const userBased = updatesData.filter(update => update.from_user_follow);
+      
+      setCategoryUpdates(categoryBased);
+      setUserFollowUpdates(userBased);
+      
       setUnreadCount(unreadData.unread_count || 0);
     } catch (err) {
       console.error('Dashboard load error:', err);
@@ -122,6 +135,13 @@ const DashboardPage = ({ user, onLoginClick, onOpenNotifications }) => {
       if (updatesRes.ok) {
         const updatesData = await updatesRes.json();
         setUpdates(updatesData);
+        
+        // Separate updates by source (category vs user follow)
+        const categoryBased = updatesData.filter(update => !update.from_user_follow);
+        const userBased = updatesData.filter(update => update.from_user_follow);
+        
+        setCategoryUpdates(categoryBased);
+        setUserFollowUpdates(userBased);
       }
     } catch (err) {
       console.error('Follow toggle error:', err);
@@ -181,6 +201,10 @@ const DashboardPage = ({ user, onLoginClick, onOpenNotifications }) => {
           ⚠️ {error}
         </div>
       )}
+
+      <SearchUsers user={user} token={token} onUserFollowed={() => setRefreshFollowing(prev => prev + 1)} />
+
+      <FollowingList user={user} token={token} refreshTrigger={refreshFollowing} />
 
       <section className="grid grid-cols-1 gap-8 lg:grid-cols-3">
         <div className="rounded-3xl border border-slate-200/50 bg-gradient-to-br from-white via-slate-50 to-slate-100 p-8 shadow-xl lg:col-span-2">
@@ -258,11 +282,11 @@ const DashboardPage = ({ user, onLoginClick, onOpenNotifications }) => {
             </div>
             <span className="ml-4 text-slate-600 font-semibold">Loading updates...</span>
           </div>
-        ) : updates.length === 0 ? (
+        ) : categoryUpdates.length === 0 ? (
           <p className="text-base text-slate-500 font-medium py-8 text-center">No updates yet. Follow more categories to populate this feed.</p>
         ) : (
           <div className="space-y-3">
-            {updates.map((item) => (
+            {categoryUpdates.map((item) => (
               <div key={`${item.entry_type}-${item.entry_id}`} className="rounded-2xl border border-slate-200 bg-white p-5 transform hover:scale-102 transition-all shadow-sm hover:shadow-md hover:border-blue-300">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -275,6 +299,49 @@ const DashboardPage = ({ user, onLoginClick, onOpenNotifications }) => {
                       <span className="text-slate-700 font-semibold">{item.category_name}</span>
                       {' by '}
                       <span className="text-slate-700 font-semibold">{item.author_name}</span>
+                    </p>
+                  </div>
+                  <p className="text-xs text-slate-400 font-semibold">{new Date(item.created_at).toLocaleString()}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="rounded-3xl border border-slate-200/50 bg-gradient-to-br from-white via-slate-50 to-slate-100 p-8 shadow-xl">
+        <div className="mb-6 flex items-center justify-between">
+          <h2 className="text-2xl font-black text-slate-900">👥 New from Followed People</h2>
+          <span className="text-xs uppercase tracking-[0.2em] text-slate-400 font-bold">Latest Updates</span>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <div className="animate-spin">
+              <svg className="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
+              </svg>
+            </div>
+            <span className="ml-4 text-slate-600 font-semibold">Loading updates...</span>
+          </div>
+        ) : userFollowUpdates.length === 0 ? (
+          <p className="text-base text-slate-500 font-medium py-8 text-center">No updates yet. Follow more people to see their posts here!</p>
+        ) : (
+          <div className="space-y-3">
+            {userFollowUpdates.map((item) => (
+              <div key={`${item.entry_type}-${item.entry_id}`} className="rounded-2xl border border-slate-200 bg-white p-5 transform hover:scale-102 transition-all shadow-sm hover:shadow-md hover:border-purple-300">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-base font-bold text-slate-900">{item.entry_title}</p>
+                    <p className="text-xs text-slate-500 mt-2">
+                      <span className={`font-bold ${item.entry_type === 'experience' ? 'text-purple-600' : 'text-pink-600'}`}>
+                        {item.entry_type === 'experience' ? '⭐ Experience' : '📦 Product'}
+                      </span>
+                      {' in '}
+                      <span className="text-slate-700 font-semibold">{item.category_name}</span>
+                      {' by '}
+                      <span className="text-purple-700 font-bold">{item.author_name}</span>
                     </p>
                   </div>
                   <p className="text-xs text-slate-400 font-semibold">{new Date(item.created_at).toLocaleString()}</p>

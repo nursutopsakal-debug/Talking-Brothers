@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import API_BASE from './config';
 
 const NotificationsPanel = ({ onClose }) => {
   const [notifications, setNotifications] = useState([]);
@@ -15,7 +16,7 @@ const NotificationsPanel = ({ onClose }) => {
 
     try {
       setLoading(true);
-      const res = await fetch('http://localhost:5000/api/notifications', {
+      const res = await fetch(`${API_BASE}/api/notifications`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
@@ -40,7 +41,7 @@ const NotificationsPanel = ({ onClose }) => {
     if (!token) return;
 
     try {
-      const res = await fetch('http://localhost:5000/api/notifications/read-all', {
+      const res = await fetch(`${API_BASE}/api/notifications/read-all`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
